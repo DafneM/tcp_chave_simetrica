@@ -1,0 +1,5 @@
+gcc -o alice alice.c -lssl -lcrypto
+./alice
+
+gcc -o bob bob.c -lssl -lcrypto
+./bob

@@ -1,0 +1,2 @@
+gcc -o saida fractal.c -lm
+./saida 20
