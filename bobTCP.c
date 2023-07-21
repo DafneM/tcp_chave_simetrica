@@ -1,110 +1,179 @@
-/* *****************************/
-/* FGA / Eng. Software / FRC   */
-/* Prof. Fernando W. Cruz      */
-/* Codigo: tcpServer2.c	       */
-/* *****************************/
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
 #include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
 #include <openssl/des.h>
 
-#define QLEN            5               /* tamanho da fila de clientes  */
-#define MAX_SIZE	80		/* tamanho do buffer */
+#pragma pack(push, 1)
+typedef struct
+{
+    char signature[2];
+    int fileSize;
+    short reserved1;
+    short reserved2;
+    int dataOffset;
+} BMPFileHeader;
+#pragma pack(pop)
 
-void decryptDES(char *buffer, int buffer_length, char *key) {
-    DES_key_schedule des_key;
-    DES_set_key_unchecked((DES_cblock *)key, &des_key);
+#pragma pack(push, 1)
+typedef struct
+{
+    int headerSize;
+    int width;
+    int height;
+    short planes;
+    short bitsPerPixel;
+    int compression;
+    int imageSize;
+    int xResolution;
+    int yResolution;
+    int colorsUsed;
+    int importantColors;
+} BMPInfoHeader;
+#pragma pack(pop)
 
-    int i;
-    for (i = 0; i < buffer_length; i += 8) {
-        DES_ecb_encrypt((DES_cblock *)(buffer + i), (DES_cblock *)(buffer + i), &des_key, DES_DECRYPT);
+BMPFileHeader fileHeader;
+BMPInfoHeader infoHeader;
+
+void decryptContent(const unsigned char *encryptedBuffer, int encryptedSize, unsigned char *key, unsigned char *decryptedBuffer, int *decryptedSize)
+{
+
+    DES_cblock des_key;
+    DES_key_schedule key_schedule;
+    memcpy(des_key, key, 8);
+    DES_set_key_unchecked(&des_key, &key_schedule);
+
+    *decryptedSize = 0;
+
+    for (int i = 0; i < encryptedSize; i += 8)
+    {
+
+        DES_ecb_encrypt(encryptedBuffer + i, decryptedBuffer + *decryptedSize, &key_schedule, DES_DECRYPT);
+        *decryptedSize += 8;
     }
 }
 
-int atende_cliente(int descritor, struct sockaddr_in endCli)  {
-   char bufin[MAX_SIZE];
-   int  n;
-   while (1) {
- 	memset(&bufin, 0x0, sizeof(bufin));
-    char key[9]; 
-	n = recv(descritor, &key, sizeof(key),0);
+void initHeaderBmp()
+{
+    fileHeader.signature[0] = 'B';
+    fileHeader.signature[1] = 'M';
+    fileHeader.fileSize = sizeof(BMPFileHeader) + sizeof(BMPInfoHeader) + (40 * 20 * 3);
+    fileHeader.reserved1 = 0;
+    fileHeader.reserved2 = 0;
+    fileHeader.dataOffset = sizeof(BMPFileHeader) + sizeof(BMPInfoHeader);
 
-    printf("\n");
-    for(int i = 0; i<sizeof(key); i++){
-        printf("%02x ", (unsigned char)key[i]);
+    infoHeader.headerSize = sizeof(BMPInfoHeader);
+    infoHeader.width = 40;
+    infoHeader.height = 20;
+    infoHeader.planes = 1;
+    infoHeader.bitsPerPixel = 24;
+    infoHeader.compression = 0;
+    infoHeader.imageSize = 40 * 20 * 3;
+    infoHeader.xResolution = 0;
+    infoHeader.yResolution = 0;
+    infoHeader.colorsUsed = 0;
+    infoHeader.importantColors = 0;
+}
+
+int main(int argc, char *argv[])
+{
+    // system("clear");
+    initHeaderBmp();
+
+    int sockfd, newsockfd;
+    struct sockaddr_in serverAddr, clientAddr;
+    socklen_t addr_size;
+    unsigned char key[8];
+
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd == -1)
+    {
+        perror("Error creating socket");
+        exit(EXIT_FAILURE);
     }
 
+    memset(&serverAddr, 0, sizeof(serverAddr));
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_addr.s_addr = inet_addr(argv[1]);
+    serverAddr.sin_port = htons(atoi(argv[2]));
 
-    n = recv(descritor, &bufin, sizeof(bufin),0);
-
-    decryptDES(bufin, sizeof(bufin), key);
-
-    // Salve o bufin descriptografado em um novo arquivo BMP
-    FILE *decrypted_file = fopen("arquivo_descriptografado.bmp", "wb");
-    if (!decrypted_file) {
-        perror("Erro ao criar o arquivo descriptografado");
-        free(bufin);
-        return 1;
+    if (bind(sockfd, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == -1)
+    {
+        perror("Error binding socket");
+        close(sockfd);
+        exit(EXIT_FAILURE);
     }
 
-    fwrite(bufin, 1, sizeof(bufin), decrypted_file);
-    fclose(decrypted_file);
+    if (listen(sockfd, 10) == -1)
+    {
+        perror("Error listening for connections");
+        close(sockfd);
+        exit(EXIT_FAILURE);
+    }
 
-    free(bufin);
+    printf("Bob: Waiting for connections...\n");
 
-	if (strncmp(bufin, "FIM", 3) == 0)
-            break;
-	fprintf(stdout, "[%s:%u] => %s\n", inet_ntoa(endCli.sin_addr), ntohs(endCli.sin_port), bufin);
-   } /* fim while */
-   fprintf(stdout, "Encerrando conexao com %s:%u ...\n\n", inet_ntoa(endCli.sin_addr), ntohs(endCli.sin_port));
-   close (descritor);
- } /* fim atende_cliente */
+    addr_size = sizeof(clientAddr);
+    newsockfd = accept(sockfd, (struct sockaddr *)&clientAddr, &addr_size);
+    if (newsockfd == -1)
+    {
+        perror("Error accepting connection");
+        close(sockfd);
+        exit(EXIT_FAILURE);
+    }
 
-int main(int argc, char *argv[]) {
-   struct sockaddr_in endServ;  /* endereco do servidor   */
-   struct sockaddr_in endCli;   /* endereco do cliente    */
-   int    sd, novo_sd;          /* socket descriptors */
-   int    pid, alen,n; 
+    int bytesRead = recv(newsockfd, key, 8, 0);
+    if (bytesRead != 8)
+    {
+        perror("Error receiving key");
+        close(newsockfd);
+        close(sockfd);
+        exit(EXIT_FAILURE);
+    }
 
-   if (argc<3) {
-	  printf("Digite IP e Porta para este servidor\n");
-	  exit(1); }
-   memset((char *)&endServ,0,sizeof(endServ)); /* limpa variavel endServ    */
-   endServ.sin_family 		= AF_INET;           	/* familia TCP/IP   */
-   endServ.sin_addr.s_addr 	= inet_addr(argv[1]); 	/* endereco IP      */
-   endServ.sin_port 		= htons(atoi(argv[2])); /* PORTA	    */
+    printf("Bob: Simetric key received.\n");
 
-   /* Cria socket */
-   sd = socket(AF_INET, SOCK_STREAM, 0);
-   if (sd < 0) {
-     fprintf(stderr, "Falha ao criar socket!\n");
-     exit(1); }
+    unsigned char encryptedBuffer[65536];
+    int encryptedSize;
 
-   /* liga socket a porta e ip */
-   if (bind(sd, (struct sockaddr *)&endServ, sizeof(endServ)) < 0) {
-     fprintf(stderr,"Ligacao Falhou!\n");
-     exit(1); }
+    bytesRead = recv(newsockfd, encryptedBuffer, sizeof(encryptedBuffer), 0);
+    if (bytesRead == -1)
+    {
+        perror("Error receiving encrypted content");
+        close(newsockfd);
+        close(sockfd);
+        exit(EXIT_FAILURE);
+    }
+    encryptedSize = bytesRead;
 
-   /* Ouve porta */
-   if (listen(sd, QLEN) < 0) {
-     fprintf(stderr,"Falhou ouvindo porta!\n");
-     exit(1); }
+    printf("Bob: Encrypted message received from Alice.\n");
 
-   printf("Servidor ouvindo no IP %s, na porta %s ...\n\n", argv[1], argv[2]);
-   /* Aceita conexoes */
-   alen = sizeof(endCli);
-   for ( ; ; ) {
-	 /* espera nova conexao de um processo cliente ... */	
-	if ( (novo_sd=accept(sd, (struct sockaddr *)&endCli, &alen)) < 0) {
-		fprintf(stdout, "Falha na conexao\n");
-		exit(1); }
-	fprintf(stdout, "Cliente %s: %u conectado.\n", inet_ntoa(endCli.sin_addr), ntohs(endCli.sin_port)); 
-	atende_cliente(novo_sd, endCli);
-   } /* fim for */
-} /* fim do programa */
+    unsigned char decryptedBuffer[65536];
+    int decryptedSize;
 
+    decryptContent(encryptedBuffer, encryptedSize, key, decryptedBuffer, &decryptedSize);
+
+    FILE *outputFile = fopen("bob.bmp", "wb");
+    if (!outputFile)
+    {
+        perror("Error opening output file");
+        close(newsockfd);
+        close(sockfd);
+        exit(EXIT_FAILURE);
+    }
+
+    // Write the headers to the file
+    fwrite(&fileHeader, sizeof(BMPFileHeader), 1, outputFile);
+    fwrite(&infoHeader, sizeof(BMPInfoHeader), 1, outputFile);
+
+    fwrite(decryptedBuffer, 1, decryptedSize, outputFile);
+    fclose(outputFile);
+
+    printf("Bob: Desencrypted message saved as 'bob.bmp'.\n");
+
+    close(newsockfd);
+    close(sockfd);
+    return 0;
+}

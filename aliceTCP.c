@@ -1,137 +1,155 @@
-/* ******************************/
-/* FGA/Eng. Software/ FRC       */
-/* Prof. Fernando W. Cruz       */
-/* Codigo: tcpClient2.c         */
-/* ******************************/
-
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
 #include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
 #include <openssl/des.h>
 
-#define MAX_SIZE    	80
+void generateSymmetricKey(unsigned char *key)
+{
+    srand(time(NULL));
 
-void generateDESKey(char *key) {
-    int i;
-    srand(time(NULL)); // Seed do gerador de números aleatórios com o tempo atual
-
-    // Preenche a chave com valores aleatórios entre 0 e 255 (8 bits)
-    for (i = 0; i < 8; i++) {
-        key[i] = rand() % 256;
-    }
-    key[8] = '\0'; // Terminador de string
-}
-
-void encryptDES(char *bufout, int bufout_length, char *key) {
-    DES_key_schedule des_key;
-    DES_set_key((DES_cblock *)key, &des_key);
-
-    int i;
-    for (i = 0; i < bufout_length; i += 8) {
-        DES_ecb_encrypt((DES_cblock *)(bufout + i), (DES_cblock *)(bufout + i), &des_key, DES_ENCRYPT);
+    for (int i = 0; i < 8; i++)
+    {
+        key[i] = (unsigned char)rand();
     }
 }
 
-int main(int argc,char * argv[]) {
-	struct  sockaddr_in ladoServ; /* contem dados do servidor 	*/
-	int     sd;          	      /* socket descriptor              */
-	int     n,k;                  /* num caracteres lidos do servidor */
-	char    bufout[MAX_SIZE];     /* bufout de dados enviados  */
-	
-	/* confere o numero de argumentos passados para o programa */
-  	if(argc<3)  {
-    	   printf("uso correto: %s <ip_do_servidor> <porta_do_servidor>\n", argv[0]);
-    	   exit(1);  }
-
-	memset((char *)&ladoServ,0,sizeof(ladoServ)); /* limpa estrutura */
-	memset((char *)&bufout,0,sizeof(bufout));     /* limpa bufout */
-	
-	ladoServ.sin_family      = AF_INET; /* config. socket p. internet*/
-	ladoServ.sin_addr.s_addr = inet_addr(argv[1]);
-	ladoServ.sin_port        = htons(atoi(argv[2]));
-
-    
-
-	/* Cria socket */
-	sd = socket(AF_INET, SOCK_STREAM, 0);
-	if (sd < 0) {
-		fprintf(stderr, "Criacao do socket falhou!\n");
-		exit(1); }
-
-	/* Conecta socket ao servidor definido */
-	if (connect(sd, (struct sockaddr *)&ladoServ, sizeof(ladoServ)) < 0) {
-		fprintf(stderr,"Tentativa de conexao falhou!\n");
-		exit(1); }
-	while (1) {
-        char key[9]; // A chave do DES deve ter 8 bytes + 1 para o terminador '\0'
-        generateDESKey(&key);
-		send(sd, key, sizeof(key), 0);
-
-    printf("\n");
-    for(int i = 0; i<sizeof(key); i++){
-        printf("%02x ", (unsigned char)key[i]);
+int connectToServer(const char *ipAddress, int port)
+{
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0)
+    {
+        perror("Error creating socket");
+        exit(EXIT_FAILURE);
     }
 
-    FILE *file = fopen("fractaljulia.bmp", "rb");
-    if (!file) {
-        perror("Erro ao abrir o arquivo BMP original");
-        return 1;
+    struct sockaddr_in serverAddr;
+    memset(&serverAddr, 0, sizeof(serverAddr));
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(port);
+    inet_pton(AF_INET, ipAddress, &serverAddr.sin_addr);
+
+    if (connect(sockfd, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0)
+    {
+        perror("Error connecting");
+        exit(EXIT_FAILURE);
     }
 
-    // Obtenha o tamanho do arquivo BMP
+    return sockfd;
+}
+
+unsigned char *readFile(const char *filename, long *fileSize)
+{
+    FILE *file = fopen(filename, "rb");
+    if (!file)
+    {
+        perror("Error opening the file");
+        exit(EXIT_FAILURE);
+    }
+
     fseek(file, 0, SEEK_END);
-    int file_size = ftell(file);
+    *fileSize = ftell(file);
     fseek(file, 0, SEEK_SET);
 
-    // Verifique o tamanho do cabeçalho BMP (54 bytes) e calcule o tamanho do corpo
     const int header_size = 54;
-    if (file_size <= header_size) {
+    if (*fileSize <= header_size)
+    {
         perror("Arquivo BMP inválido");
         fclose(file);
         return 1;
     }
-    int body_size = file_size - header_size;
+    int body_size = *fileSize - header_size;
 
-    // Aloque um bufout para armazenar o conteúdo do corpo do arquivo BMP
-    char *bufout = (char *)malloc(body_size);
-    if (!bufout) {
-        perror("Erro ao alocar memória para o bufout");
+    unsigned char *fileBuffer = (unsigned char *)malloc(*fileSize);
+    if (!fileBuffer)
+    {
+        perror("Error allocating memory");
         fclose(file);
-        return 1;
+        exit(EXIT_FAILURE);
     }
 
-    // Ignore o cabeçalho BMP lendo diretamente o corpo no bufout
-    if (fseek(file, header_size, SEEK_SET) != 0) {
+    if (fseek(file, header_size, SEEK_SET) != 0)
+    {
         perror("Erro ao posicionar no início do corpo do arquivo BMP");
         fclose(file);
-        free(bufout);
+        free(fileBuffer);
         return 1;
     }
 
-    // Ler o conteúdo do corpo do arquivo BMP no bufout
-    if (fread(bufout, 1, body_size, file) != body_size) {
-        perror("Erro ao ler o corpo do arquivo BMP");
+    if (fread(fileBuffer, 1, body_size, file) != body_size)
+    {
+        perror("Error reading the file");
+        free(fileBuffer);
         fclose(file);
-        free(bufout);
+        exit(EXIT_FAILURE);
+    }
+
+    fclose(file);
+    return fileBuffer;
+}
+
+void encryptContent(unsigned char *content, long contentSize, const unsigned char *key)
+{
+    DES_cblock desKey;
+    DES_key_schedule keySchedule;
+    memcpy(desKey, key, 8);
+    DES_set_key_unchecked(&desKey, &keySchedule);
+
+    int numBlocks = contentSize / 8;
+    int remainingBytes = contentSize % 8;
+
+    for (int i = 0; i < numBlocks; i++)
+    {
+        DES_ecb_encrypt(content + (i * 8), content + (i * 8), &keySchedule, DES_ENCRYPT);
+    }
+
+    if (remainingBytes > 0)
+    {
+        DES_ecb_encrypt(content + (numBlocks * 8), content + (numBlocks * 8), &keySchedule, DES_ENCRYPT);
+    }
+}
+
+int main(int argc, char *argv[])
+{
+    // system("clear");
+    if (argc != 3)
+    {
+        fprintf(stderr, "Usage: %s <server_ip_address> <server_port>\n", argv[0]);
         return 1;
     }
 
-    // Feche o arquivo, pois não precisamos mais dele após ler o corpo
-    fclose(file);
+    unsigned char key[8];
+    generateSymmetricKey(key);
 
-    // Implemente aqui a lógica para criptografar o arquivo BMP usando a chave 'key'
-    encryptDES(bufout, body_size, key);
-		send(sd,&bufout,strlen(bufout),0); /* enviando dados ...  */
-		if (strncmp(bufout, "FIM",3) == 0) 
-			break;
-	} /* fim while */
-	printf("------- encerrando conexao com o servidor -----\n");
-	close (sd);
-	return (0);
-} /* fim do programa */
+    int socket_fd = connectToServer(argv[1], atoi(argv[2]));
 
+    if (send(socket_fd, key, sizeof(key), 0) != sizeof(key))
+    {
+        perror("Error sending the key");
+        close(socket_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Alice: Key succesfully sent!\n");
+
+    long fileSize;
+    unsigned char *fileBuffer = readFile("fractaljulia.bmp", &fileSize);
+
+    encryptContent(fileBuffer, fileSize, key);
+
+    if (send(socket_fd, fileBuffer, fileSize, 0) != fileSize)
+    {
+        perror("Error sending the encrypted content");
+        free(fileBuffer);
+        close(socket_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Alice: Encrypted message succesfully sent!\n");
+
+    free(fileBuffer);
+    close(socket_fd);
+
+    return 0;
+}
